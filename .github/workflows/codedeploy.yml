@@ -39,7 +39,7 @@ jobs:
 
       - name: Upload artifact to S3
         env:
-          S3_BUCKET: ${{ vars.S3_BUCKET }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
           S3_PREFIX: ${{ vars.S3_PREFIX }}
         run: |
           if [ -z "$S3_BUCKET" ]; then
