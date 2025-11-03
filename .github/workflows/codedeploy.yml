@@ -62,7 +62,7 @@ jobs:
         env:
           APPLICATION_NAME: ${{ vars.CODEDEPLOY_APPLICATION }}
           DEPLOYMENT_GROUP: ${{ vars.CODEDEPLOY_DEPLOYMENT_GROUP }}
-          S3_BUCKET: ${{ vars.S3_BUCKET }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
         run: |
           cat > revision.json <<JSON
           {
