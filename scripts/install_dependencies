@@ -1,13 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-# Amazon Linux 2023 (dnf) & Amazon Linux 2 (yum) friendly
-if command -v dnf >/dev/null 2>&1; then
-  sudo dnf -y install httpd
-else
-  sudo yum -y install httpd
+# Make sure the target path exists even before we copy files
+mkdir -p /var/www/html
+
+# Install Apache (httpd) if missing
+if ! rpm -q httpd >/dev/null 2>&1; then
+  dnf -y install httpd
 fi
 
-sudo mkdir -p /var/www/html
-sudo chown -R ec2-user:ec2-user /var/www/html || true
-
+# Enable and start it
+systemctl enable httpd
+systemctl restart httpd
