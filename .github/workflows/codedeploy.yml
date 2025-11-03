@@ -1,14 +1,14 @@
-name: Deploy to AWS CodeDeploy #1
+name: Deploy to AWS CodeDeploy
 
 on:
   push:
-    branches: [main]
+    branches: [ main ]
 
 jobs:
   deploy:
     name: Package and deploy
     runs-on: ubuntu-latest
-    environment: dev
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,6 +20,27 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION }}
 
+      - name: Sanity / who am I
+        run: |
+          set -x
+          aws --version
+          aws sts get-caller-identity
+          echo "REGION=${{ vars.AWS_REGION }}"
+          echo "APP=${{ vars.CODEDEPLOY_APPLICATION }}"
+          echo "DG=${{ vars.CODEDEPLOY_DEPLOYMENT_GROUP }}"
+          echo "S3_BUCKET=${{ secrets.S3_BUCKET }}"
+          # List bucket to confirm access/region
+          aws s3 ls "s3://${{ secrets.S3_BUCKET }}/" || true
+
+      - name: Validate CodeDeploy names early
+        run: |
+          set -euo pipefail
+          aws deploy get-application \
+            --application-name "${{ vars.CODEDEPLOY_APPLICATION }}"
+          aws deploy get-deployment-group \
+            --application-name "${{ vars.CODEDEPLOY_APPLICATION }}" \
+            --deployment-group-name "${{ vars.CODEDEPLOY_DEPLOYMENT_GROUP }}"
+
       - name: Create deploy metadata
         run: |
           cat > deploy-info.json <<JSON
@@ -28,42 +49,45 @@ jobs:
             "commit": "${GITHUB_SHA}"
           }
           JSON
+          cat deploy-info.json
 
       - name: Package artifact
         run: |
+          set -euo pipefail
           TIMESTAMP=$(date +%Y%m%d%H%M%S)
-          ARTIFACT_NAME=app-${TIMESTAMP}.zip
-          # Exclude VCS and workflow files
+          ARTIFACT_NAME="app-${TIMESTAMP}.zip"
           zip -r "$ARTIFACT_NAME" . -x ".git/*" "./.github/*"
           echo "ARTIFACT_NAME=$ARTIFACT_NAME" >> $GITHUB_ENV
+          ls -lh "$ARTIFACT_NAME"
 
       - name: Upload artifact to S3
         env:
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
           S3_PREFIX: ${{ vars.S3_PREFIX }}
         run: |
+          set -euo pipefail
           if [ -z "$S3_BUCKET" ]; then
-            echo "S3_BUCKET secret not set; aborting upload" >&2
+            echo "S3_BUCKET secret not set" >&2
             exit 1
           fi
-          # Normalize optional prefix (strip leading/trailing slashes); build S3 key
-          if [ -n "$S3_PREFIX" ]; then
-            S3_PREFIX="${S3_PREFIX#/}"
-            S3_PREFIX="${S3_PREFIX%/}"
+          if [ -n "${S3_PREFIX:-}" ]; then
+            S3_PREFIX="${S3_PREFIX#/}"; S3_PREFIX="${S3_PREFIX%/}"
             S3_KEY="${S3_PREFIX}/${ARTIFACT_NAME}"
           else
             S3_KEY="${ARTIFACT_NAME}"
           fi
-          echo "Using S3 key: $S3_KEY"
-          aws s3 cp "$ARTIFACT_NAME" "s3://$S3_BUCKET/$S3_KEY"
+          echo "Uploading to s3://$S3_BUCKET/$S3_KEY"
+          aws s3 cp "$ARTIFACT_NAME" "s3://$S3_BUCKET/$S3_KEY" --no-progress
           echo "S3_KEY=$S3_KEY" >> $GITHUB_ENV
+          aws s3 ls "s3://$S3_BUCKET/$S3_KEY"
 
-      - name: Register S3 revision with CodeDeploy
+      - name: Create CodeDeploy deployment
         env:
           APPLICATION_NAME: ${{ vars.CODEDEPLOY_APPLICATION }}
           DEPLOYMENT_GROUP: ${{ vars.CODEDEPLOY_DEPLOYMENT_GROUP }}
           S3_BUCKET: ${{ secrets.S3_BUCKET }}
         run: |
+          set -euo pipefail
           cat > revision.json <<JSON
           {
             "revisionType": "S3",
@@ -74,42 +98,17 @@ jobs:
             }
           }
           JSON
+          echo "Creating deployment for app=${APPLICATION_NAME}, dg=${DEPLOYMENT_GROUP}, key=${S3_KEY}"
           DEPLOYMENT_ID=$(aws deploy create-deployment \
             --application-name "$APPLICATION_NAME" \
             --deployment-group-name "$DEPLOYMENT_GROUP" \
             --revision file://revision.json \
             --query deploymentId --output text)
-          echo "Created deployment: $DEPLOYMENT_ID"
-          echo "DEPLOYMENT_ID=$DEPLOYMENT_ID" >> $GITHUB_ENV
+          echo "DEPLOYMENT_ID=$DEPLOYMENT_ID" | tee -a $GITHUB_ENV
 
-      - name: Wait for deployment to finish
-        env:
-          DEPLOYMENT_ID: ${{ env.DEPLOYMENT_ID }}
+      - name: Wait for deployment
         run: |
           set -euo pipefail
-          MAX_SECONDS=$((10 * 60)) # 10 minutes
-          SLEEP=5
-          ELAPSED=0
-          while true; do
-            STATUS=$(aws deploy get-deployment --deployment-id "$DEPLOYMENT_ID" --query 'deploymentInfo.status' --output text)
-            echo "Deployment status: $STATUS"
-            if [[ "$STATUS" == "Succeeded" ]]; then
-              echo "Deployment succeeded"
-              exit 0
-            fi
-            if [[ "$STATUS" == "Failed" ]] || [[ "$STATUS" == "Stopped" ]]; then
-              echo "Deployment failed or stopped"
-              exit 1
-            fi
-            if [[ $ELAPSED -ge $MAX_SECONDS ]]; then
-              echo "Timed out waiting for deployment (waited $ELAPSED seconds)"
-              exit 1
-            fi
-            sleep $SLEEP
-            ELAPSED=$((ELAPSED + SLEEP))
-            # simple backoff - increase sleep up to 30s
-            if [[ $SLEEP -lt 30 ]]; then
-              SLEEP=$((SLEEP * 2))
-              if [[ $SLEEP -gt 30 ]]; then SLEEP=30; fi
-            fi
-          done
+          aws deploy get-deployment --deployment-id "$DEPLOYMENT_ID" --output table
+          aws deploy wait deployment-successful --deployment-id "$DEPLOYMENT_ID"
+          aws deploy get-deployment --deployment-id "$DEPLOYMENT_ID" --output table
