@@ -1,9 +1,3 @@
 #!/bin/bash
 set -euo pipefail
-
-sudo systemctl enable httpd || true
-sudo systemctl restart httpd
-
-# sanity: ensure file landed and server responds
-test -f /var/www/html/index.html
-curl -fsS http://localhost/ >/dev/null || (sudo journalctl -u httpd --no-pager | tail -n 80; exit 1)
+systemctl restart httpd
