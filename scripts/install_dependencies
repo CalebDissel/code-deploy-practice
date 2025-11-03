@@ -1,3 +1,13 @@
 #!/bin/bash
-yum install -y httpd
+set -euo pipefail
+
+# Amazon Linux 2023 (dnf) & Amazon Linux 2 (yum) friendly
+if command -v dnf >/dev/null 2>&1; then
+  sudo dnf -y install httpd
+else
+  sudo yum -y install httpd
+fi
+
+sudo mkdir -p /var/www/html
+sudo chown -R ec2-user:ec2-user /var/www/html || true
 
